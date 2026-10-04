@@ -227,7 +227,8 @@ def llm_chat(log, row="jitLLM generation"):
         record(row, "missing", False, "chat: tokens generated")
         return
     print()
-    big(f"{float(m.group(1)):.0f} tokens/s · {m.group(2)} tokens in {float(m.group(3)):.2f} s · pure Java on the GPU")
+    # jitLLM's own metric: prompt and answer tokens together, over the whole request
+    big(f"{float(m.group(1)):.0f} tokens/s · {m.group(2)} tokens (prompt + answer) in {float(m.group(3)):.2f} s · pure Java on the GPU")
     record(row, f"{float(m.group(1)):.0f} tok/s", int(m.group(2)) > 0, f"{row}: tokens generated")
 
 
