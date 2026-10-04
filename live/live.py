@@ -109,7 +109,7 @@ def monitor():
                     pid, mem = [x.strip() for x in line.split(",")]
                     owner = owner_of(int(pid))
                     procs.append((int(pid), int(mem), owner))
-                    if owner:
+                    if owner and not (owner is KERNEL and JIT.state == "active"):  # still compiling: not 'running' yet
                         state["seen_gpu"][owner.title] = (int(pid), max(int(mem), state["seen_gpu"].get(owner.title, (0, 0))[1]))
                 with lock:
                     state["procs"] = procs
@@ -251,30 +251,117 @@ def colorizer(rows):
     return lambda v: 16 if v >= top else PALETTE[min(len(PALETTE) - 1, int(rank[v] * len(PALETTE)))]
 
 
+import textwrap
+
+PROMPT = open(os.path.join(HERE, "prompt.txt")).read().strip()
+PROMPT_TYPE_SECONDS = 3.0  # the prompt is typed out at the start, while the model loads
+
+
+def prompt_box(width):
+    """The user prompt as a chat bubble, typed out over the first seconds of the run."""
+    shown = PROMPT
+    if LLM.start is not None:
+        typed = int(len(PROMPT) * min(1.0, (time.time() - LLM.start) / PROMPT_TYPE_SECONDS))
+        shown = PROMPT[:typed]
+    inner = width - 8
+    wrapped = textwrap.wrap(shown, inner) or [""]
+    if len(shown) < len(PROMPT):
+        wrapped[-1] += "▌"
+    lines = [f"{MAGENTA}╭─ ❯ the prompt, sent to Qwen3-4B running in jitLLM on the GPU {'─' * max(0, inner - 60)}╮{RESET}"]
+    for w in wrapped:
+        lines.append(f"{MAGENTA}│{RESET} {BOLD}\033[38;5;231m{fit(w, inner)}{RESET} {MAGENTA}│{RESET}")
+    lines.append(f"{MAGENTA}╰{'─' * (inner + 2)}╯{RESET}")
+    lines.append(f"  {DIM}+ system prompt: TornadoVM's rules (@Parallel loops, IntArray/FloatArray) and one example kernel{RESET}")
+    return lines
+
+
+def prompt_line(width):
+    """One line that keeps the prompt in view after the code panel is gone."""
+    return f"{MAGENTA}❯ prompt:{RESET} {DIM}{PROMPT[: width - 16]}…{RESET}"
+
+
+def assemble_lines(width, height):
+    """How the model's answer becomes a program: extract, insert into the harness, javac."""
+    a = state.get("assemble") or {}
+    steps = a.get("steps", 0)
+    tick = lambda n: f"{GREEN}✔{RESET}" if steps > n or (n == 3 and a.get("javac") is not None) else f"{BLUE}▸{RESET}"
+    out = [prompt_line(width),
+           f"{BLUE}{BOLD}3 javac{RESET}{DIM} · the model's answer becomes a program{RESET}", "",
+           f"{tick(1)} {BOLD}extract{RESET}  the ```java block from {a.get('source', '')}: a {a.get('kernel_lines', 0)}-line method",
+           f"{tick(2)} {BOLD}insert{RESET}   it at the /*KERNEL*/ marker of Harness.template  ->  Harness.java" if steps >= 2 else "",
+           ""]
+    if steps >= 2:
+        harness = open(os.path.join(WORK, "Harness.java")).read().split("\n")
+        k0 = next(i for i, l in enumerate(harness) if "the generated kernel" in l) + 1
+        k1 = k0 + a.get("kernel_lines", 0)
+        zoom = next((i for i, l in enumerate(harness) if "PHASE zoom" in l), len(harness))  # the check part only
+        keep = [i for i, l in enumerate(harness) if i < 3 or "public class Harness" in l or k0 - 1 <= i <= k1
+                or i < zoom and any(m in l for m in (".task(\"mandelbrot\"", "plan.execute();", "mandelbrot(w, h, iterations, view, cpu)",
+                                        "new TaskGraph(\"check\")", "public static void main"))]
+        room = height - len(out) - 6
+        shown, previous = [], -1
+        for i in keep:
+            if i != previous + 1:
+                shown.append(f"{GREY}     ┊ …{RESET}")
+            line = harness[i]
+            if k0 + 3 <= i < k1 - 2:
+                # the whole method was just on screen: keep its first and last lines, and the harness around it
+                if i == k0 + 3:
+                    shown.append(f"{YELLOW}▌{RESET}{YELLOW}     ┊ … {k1 - k0 - 5} more lines written by the model …{RESET}")
+                previous = i
+                continue
+            if k0 <= i < k1:
+                shown.append(f"{YELLOW}▌{RESET}{DIM}{i + 1:3d}{RESET} " + highlight(line))
+            else:
+                note = ""
+                if ".task(" in line:
+                    note = f"  {ORANGE}◀ on the GPU{RESET}"
+                elif "mandelbrot(w, h, iterations, view, cpu)" in line:
+                    note = f"  {GREEN}◀ same method, CPU{RESET}"
+                shown.append(f" {GREY}{i + 1:3d} {line}{RESET}{note}")
+            previous = i
+        out += shown[:room]
+        out.append(f"{DIM}  {YELLOW}▌{RESET}{DIM} = written by the model; grey = the fixed harness around it{RESET}")
+        out.append("")
+    if steps >= 3:
+        out.append(f"{tick(3)} {BOLD}compile{RESET}  javac -cp $TORNADOVM_HOME/share/java/tornado/*.jar Harness.java")
+        if a.get("errors"):
+            out += [f"  {RED}{l}{RESET}" for l in a["errors"].strip().split("\n")[:6]]
+        else:
+            out.append(f"    {GREEN}-> Harness.class, {a.get('class_bytes', 0):,} bytes of bytecode, {a.get('javac', 0):.1f} s{RESET}"
+                       f"{DIM}  · next: TornadoVM JIT to CUDA{RESET}")
+    return out
+
+
 def content_lines(width, height, tick):
     with lock:
         view, code, cuda, frame, info = state["view"], state["code"], list(state["cuda"]), state["frame"], state["frame_info"]
     out = []
     if view == "code":
-        out.append(f"{YELLOW}{BOLD}2 generated Java{RESET}{DIM} · streaming from the model as it writes it{RESET}")
+        out += prompt_box(width - 4)
         out.append("")
+        out.append(f"{YELLOW}{BOLD}2 generated Java{RESET}{DIM} · the model's answer, streaming as it writes it{RESET}")
         lines = code_text(code)
         if not lines and LLM.state == "active":
             out.append(f"{MAGENTA}{SPIN[tick % 10]}{RESET} jitLLM is loading Qwen3-4B (7.5 GB) onto the GPU and JIT-compiling its own")
             out.append(f"  Java inference kernels with TornadoVM; then it reads the prompt and starts writing.")
             out.append(f"  {DIM}(watch the GPU memory climb on the left){RESET}")
         cursor = f"{YELLOW}▌{RESET}" if LLM.state == "active" and tick % 6 < 3 else ""
-        for i, l in enumerate(lines[-(height - 3):]):
-            last = i == len(lines[-(height - 3):]) - 1
-            out.append(f"{DIM}{len(lines) - len(lines[-(height - 3):]) + i + 1:3d} │{RESET} " + highlight(l) + (cursor if last else ""))
+        room = max(4, height - len(out) - 1)
+        for i, l in enumerate(lines[-room:]):
+            last = i == len(lines[-room:]) - 1
+            out.append(f"{DIM}{len(lines) - len(lines[-room:]) + i + 1:3d} │{RESET} " + highlight(l) + (cursor if last else ""))
+    elif view == "assemble":
+        out += assemble_lines(width, height)
     elif view == "cuda":
+        out.append(prompt_line(width))
         out.append(f"{ORANGE}{BOLD}4 TornadoVM JIT{RESET}{DIM} · the CUDA it generated from the model's Java, for this GPU{RESET}")
         out.append("")
-        for l in cuda[: height - 3]:
+        for l in cuda[: height - 4]:
             out.append(f"\033[38;5;180m{l}{RESET}")
     else:
+        out.append(prompt_line(width))
         out.append(f"{CYAN}{BOLD}5 the generated kernel, running on the GPU{RESET}{DIM} · {info}{RESET}")
-        out.append("")
         if frame:
             rows = frame[: 2 * (height - 3)]
             color = colorizer(rows)
@@ -374,14 +461,30 @@ def generate():
     return kernel.group(1) if kernel else ""
 
 
-def build(kernel):
+def build(kernel, source="the model's answer"):
+    """The model's method -> Harness.java (at the /*KERNEL*/ marker of Harness.template) -> javac. Each step is
+    recorded for the 'assemble' view."""
+    with lock:
+        state["view"] = "assemble"
+        state["assemble"] = {"source": source, "kernel_lines": len(kernel.strip().splitlines()), "steps": 1,
+                             "javac": None, "class_bytes": 0, "errors": ""}
+    time.sleep(1.0)
     body = kernel.rstrip().replace("\n", "\n    ")
     with open(os.path.join(WORK, "Harness.java"), "w") as f:
         f.write(open(os.path.join(HERE, "Harness.template")).read().replace("/*KERNEL*/", body))
+    with lock:
+        state["assemble"]["steps"] = 2
+    time.sleep(1.5)
+    t = time.time()
     p = shell(f'use_tornadovm_7; cd "{WORK}"; javac -cp "$TORNADO_CP" Harness.java',
               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     out, _ = p.communicate()
     open(os.path.join(WORK, "javac.log"), "w").write(out)
+    cls = os.path.join(WORK, "Harness.class")
+    with lock:
+        state["assemble"].update(steps=3, javac=time.time() - t, errors=out if p.returncode else "",
+                                 class_bytes=os.path.getsize(cls) if p.returncode == 0 and os.path.exists(cls) else 0)
+    time.sleep(float(os.environ.get("ASSEMBLE_SECONDS", "4")))  # time to read it on stage
     return p.returncode == 0
 
 
@@ -457,8 +560,9 @@ def main():
                 state["fallback"] = True
             time.sleep(2)
             JAVAC.activate("rehearsal kernel")
-            compiled = build(open(os.path.join(HERE, "reference.kernel")).read())
+            compiled = build(open(os.path.join(HERE, "reference.kernel")).read(), "reference.kernel (rehearsal)")
         JAVAC.finish("compiled" if compiled else "failed", ok=compiled)
+        JAVAC.seconds = (state.get("assemble") or {}).get("javac") or JAVAC.seconds  # javac itself, not the reading pauses
         if compiled:
             ok = run_kernel()
         match = state["match"]

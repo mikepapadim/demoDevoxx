@@ -57,7 +57,19 @@ and that Java then runs on the same GPU. Full screen (at least 120 × 40), redra
   burst, then the cyan kernel load, on one device. "Seen on this GPU during the run" lists both processes: jitLLM
   about 8.4 GB, the kernel about 0.5 GB.
 * **The content panel** follows the work:
+  * **the prompt:** typed out in a magenta chat bubble at the start, labelled "sent to Qwen3-4B running in jitLLM
+    on the GPU", with a note on what the system prompt contains. It stays above the code as the code streams in,
+    and as a one-line `❯ prompt:` header in every later view;
   * the code streaming from the model;
+  * **how the answer becomes a program** (the javac step, held ~6 s so it can be read; `ASSEMBLE_SECONDS`):
+    1. extract the ```` ```java ```` block from the model's raw output;
+    2. insert it at the `/*KERNEL*/` marker of `live/Harness.template`, giving `Harness.java`. The view shows that
+       file with the model's lines marked by a yellow bar and the fixed harness in grey. Arrows point at
+       `.task("mandelbrot", Harness::mandelbrot, …)` (on the GPU) and at the plain `mandelbrot(…)` call (the same
+       method on the CPU);
+    3. `javac` against the TornadoVM jars, then the size of `Harness.class` and javac's real time.
+
+    ![the javac step](live/screenshot-harness.png)
   * the CUDA TornadoVM generated from it;
   * the kernel's output: a zoom into Seahorse Valley, 100 frames at 7680 × 4320, one kernel execution per frame
     (~17 ms each), paced at ~12 frames/s so the load shows on `nvidia-smi`. It is drawn with half-blocks, two
