@@ -11,4 +11,5 @@ check() { # name, command, success pattern
 check demoHybrid  "bash demoHybrid.sh"        "All iterations correct"
 check demoTile    "bash demoTile.sh"          "All rungs produced the same, correct result"
 check demoJitllm  "bash demoJitllm.sh"        "pp512"
+check fancyJitllmCode "bash fancyJitllm.sh code" "PASSED"
 echo "logs: $log"

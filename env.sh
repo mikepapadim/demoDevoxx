@@ -12,6 +12,7 @@ BUILD="$DEMO_ROOT/build"
 # Models (see models.sh for everything on this machine)
 MODEL_BENCH="${MODEL_BENCH:-$HOME/models/Qwen3-0.6B-F16.gguf}"            # jitLLM vs llama.cpp
 MODEL_CHAT="${MODEL_CHAT:-$HOME/models/Llama-3.2-1B-Instruct-f16.gguf}"    # live generation
+MODEL_CODE="${MODEL_CODE:-$HOME/jcon/models/Qwen3-4B-f16.gguf}"             # writes the GPU kernel (fancyJitllm.sh)
 
 # --- presentation helpers -------------------------------------------------------------------
 step()  { printf '\n\033[1;35m==> %s\033[0m\n' "$*"; }

@@ -10,6 +10,10 @@ real output of each demo (the logs the scripts capture). Standard library only. 
     fancy.py tile-ladder LOG           demo 25: the FP16 GEMM ladder
     fancy.py llm-chat LOG              jitLLM generation: tokens per second
     fancy.py llm-bench PP TG LLAMA     jitLLM prefill/decode vs llama.cpp
+    fancy.py stream                    stdin -> terminal as tokens arrive: drops <think></think> and ``` fences
+    fancy.py code FILE                 a Java source with line numbers and syntax colors
+    fancy.py cuda LOG [LINES]          the start of the CUDA kernel TornadoVM generated (from --printKernel)
+    fancy.py fractal LOG               the generated kernel's result: the image, GPU vs CPU time, match check
     fancy.py scoreboard TITLE          every row the renders above recorded (in $FANCY_STATE), with checks
 
 Each render appends its headline row and its check to $FANCY_STATE, so the script can end with a scoreboard.
@@ -215,16 +219,16 @@ def tile_ladder(log):
            "ladder: every rung correct")
 
 
-def llm_chat(log):
+def llm_chat(log, row="jitLLM generation"):
     text = read(log)
     m = re.search(r"achieved tok/s: ([0-9.]+)\. Tokens: (\d+), seconds: ([0-9.]+)", text)
     if not m:
         print(paint(RED, "    no performance line in the log"))
-        record("jitLLM generation", "missing", False, "chat: tokens generated")
+        record(row, "missing", False, "chat: tokens generated")
         return
     print()
     big(f"{float(m.group(1)):.0f} tokens/s · {m.group(2)} tokens in {float(m.group(3)):.2f} s · pure Java on the GPU")
-    record("jitLLM generation", f"{float(m.group(1)):.0f} tok/s", int(m.group(2)) > 0, "chat: tokens generated")
+    record(row, f"{float(m.group(1)):.0f} tok/s", int(m.group(2)) > 0, f"{row}: tokens generated")
 
 
 def llm_bench(pp_log, tg_log, llama_log):
@@ -252,6 +256,111 @@ def llm_bench(pp_log, tg_log, llama_log):
     record("jitLLM vs llama.cpp, decode", f"{jt:,.0f} vs {lt:,.0f} t/s  {jt / lt:.2f}x", True, "bench: all four numbers measured")
 
 
+def highlight_java(line):
+    """Keywords, annotations, numbers, strings and comments in color."""
+    if line.strip().startswith("//"):
+        return paint(DIM, line)
+    out = []
+    for token in re.split(r"(@\w+|\"[^\"]*\"|\b\d[\d_.]*[fFL]?\b|\b\w+\b)", line):
+        if token.startswith("@"):
+            out.append(paint("\033[1;38;5;208m", token))
+        elif token.startswith('"'):
+            out.append(paint(GREEN, token))
+        elif re.fullmatch(r"\d[\d_.]*[fFL]?", token):
+            out.append(paint("\033[0;38;5;141m", token))
+        elif token in JAVA_KEYWORDS:
+            out.append(paint("\033[1;38;5;75m", token))
+        elif token in ("IntArray", "FloatArray", "Math"):
+            out.append(paint("\033[0;38;5;43m", token))
+        else:
+            out.append(token)
+    return "".join(out)
+
+
+def stream():
+    """Copy stdin to the terminal as it arrives, indented, without the model's empty <think></think> or the fences."""
+    hidden = {"<think>", "</think>", "```java", "```"}
+    pending, at_line_start, started = "", True, False
+    while True:
+        ch = sys.stdin.read(1)
+        if not ch:
+            break
+        pending += ch
+        # hold back text that may be the start of a hidden marker, until it is decided
+        if any(h.startswith(pending.strip()) for h in hidden) and pending.strip() and ch != "\n":
+            continue
+        if pending.strip() in hidden:
+            pending = ""
+            continue
+        for c in pending:
+            if not started and c in "\n ":
+                continue  # nothing shown yet: skip the blank lines the hidden markers leave
+            started = True
+            if at_line_start and c != "\n":
+                sys.stdout.write("    " + paint(DIM, "│ "))
+                at_line_start = False
+            sys.stdout.write(paint("\033[0;38;5;152m", c) if c != "\n" else c)
+            at_line_start = c == "\n"
+        sys.stdout.flush()
+        pending = ""
+    print()
+
+
+def code(path):
+    lines = open(path).read().rstrip("\n").split("\n")
+    for n, line in enumerate(lines, 1):
+        print(f"    {paint(DIM, f'{n:3d} │')} {highlight_java(line)}")
+    print()
+
+
+def cuda(log, count="16"):
+    text = read(log)
+    start = text.find('extern "C" __global__')
+    if start < 0:
+        print(paint(DIM, "    (no CUDA source in the log)"))
+        return
+    lines = text[start:].split("\n")[: int(count)]
+    print("    " + paint(BOLD, "...which TornadoVM JIT-compiled to CUDA") + paint(DIM, f"  (first {count} lines, --printKernel)"))
+    for line in lines:
+        line = line if len(line) <= 108 else line[:105] + "..."
+        print("    " + paint(DIM, "┊ ") + paint("\033[0;38;5;109m", line))
+    print()
+
+
+def fractal(log):
+    text = read(log)
+    gpu = re.search(r"GPU_MS ([0-9.]+)", text)
+    cpu = re.search(r"CPU_MS ([0-9.]+)", text)
+    match = re.search(r"MATCH (\d+) (\d+)", text)
+    rows = [list(map(int, line.split()[1:])) for line in text.splitlines() if line.startswith("ROW ")]
+    if not (gpu and cpu and match and rows):
+        print(paint(RED, "    the kernel did not run (see the log)"))
+        record("LLM-written GPU kernel", "did not run", False, "kernel: runs and matches the CPU")
+        return
+    top = max(max(r) for r in rows) or 1
+    palette = [17, 18, 19, 20, 26, 32, 38, 44, 50, 86, 122, 158, 194, 229, 223, 217, 211, 205, 199, 163]
+    for row in rows:
+        cells = []
+        for v in row:
+            if v >= top:
+                cells.append("\033[48;5;16m " if COLOR else "#")
+            else:
+                level = palette[min(len(palette) - 1, int((v / top) ** 0.5 * len(palette)))]
+                cells.append(f"\033[48;5;{level}m " if COLOR else " .:-=+*%@"[min(8, v * 9 // top)])
+        print("    " + "".join(cells) + (RESET if COLOR else ""))
+    print()
+    g, c = float(gpu.group(1)), float(cpu.group(1))
+    same, total = int(match.group(1)), int(match.group(2))
+    bars("4096 × 3072 pixels, up to 256 iterations each",
+         [("same method, Java, 1 CPU thread", c, YELLOW), ("same method, GPU via TornadoVM", g, GREEN)], "ms", fmt="{:,.1f}")
+    print(f"    {paint(BOLD, f'{100 * same / total:.2f}%')} of {total:,} pixels identical to the CPU run"
+          + paint(DIM, "  (the rest: float rounding at the set's edge; the GPU fuses multiply-adds)"))
+    print()
+    ok = same / total >= 0.99
+    record("LLM-written GPU kernel", f"{g:.1f} ms GPU vs {c:,.0f} ms 1 CPU", ok,
+           f"kernel: compiles, runs on the GPU, {100 * same / total:.2f}% of pixels match the CPU (>= 99%)")
+
+
 def scoreboard(title):
     rows = []
     if STATE and os.path.exists(STATE):
@@ -274,7 +383,8 @@ def main(argv):
     command, args = argv[1], argv[2:]
     handlers = {"banner": banner, "act": act, "hybrid-tasks": hybrid_tasks, "hybrid-graph": hybrid_graph,
                 "tile-pipeline": tile_pipeline, "tile-ladder": tile_ladder, "llm-chat": llm_chat,
-                "llm-bench": llm_bench, "scoreboard": scoreboard}
+                "llm-bench": llm_bench, "scoreboard": scoreboard, "stream": stream, "code": code,
+                "cuda": cuda, "fractal": fractal}
     handlers[command](*args)
     return 0
 

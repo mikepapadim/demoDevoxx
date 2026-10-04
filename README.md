@@ -20,7 +20,7 @@ scoreboard with PASSED/FAILED checks, all rendered from the demos' real output b
 ```bash
 bash fancyHybrid.sh      # Java -> cuBLAS -> Java pipeline, kernel time per task; CUDA graph 8-9x as bars              (~10 s)
 bash fancyTile.sh        # threads + tiles + cuBLAS inside one CUDA graph; the FP16 GEMM ladder as a bar chart      (~20 s)
-bash fancyJitllm.sh      # live token streaming + tok/s; jitLLM vs llama.cpp prefill/decode as bars   [chat|bench]  (~50 s)
+bash fancyJitllm.sh      # chat · the LLM writes a GPU kernel, TornadoVM runs it, a fractal · vs llama.cpp  [chat|code|bench] (~35 s)
 ```
 
 ## The demos
@@ -42,13 +42,19 @@ Llama-3-8B, gemma-4-E2B, Phi-3, Mistral-7B, DeepSeek-R1-Distill-Qwen-1.5B/7B and
 |---|---|---|
 | `fancyHybrid.sh` | 1. the `scale ▶ cublasSgemv ▶ bias` pipeline, and every iteration's kernel time per task. Iteration 0 is labelled as cuBLAS initialisation (~38 ms). 2. capture ▶ cuGraphLaunch, then plain vs graph bars: 307–313 → 35–36 µs, 8.5–8.8× | every iteration correct; every execution correct |
 | `fancyTile.sh` | 1. the four captured tasks (KernelContext, CUDA Tile, cuBLAS, @Parallel) drawn inside one CUDA-graph frame, with the launch count. 2. the 8-rung ladder colored by kind, the tile-shape gain (~1.7–1.8×), and whether the hinted tile kernel beats the hand-tuned one | 4 tasks in the captured graph; every rung correct |
-| `fancyJitllm.sh` | 1. the prompt, then tokens streaming live, then the tok/s (~180–190). 2. three spinners (jitLLM prefill, decode, llama-bench), then prefill and decode bars with each side's ± | tokens generated; all four numbers measured |
+| `fancyJitllm.sh` | 1. **Chat:** the prompt, the tokens streaming live, then the tok/s (~180–190). 2. **The model writes a GPU kernel:** Qwen3-4B F16, run by jitLLM on the GPU at ~67 tok/s, writes a Mandelbrot kernel in Java (`@Parallel` loops), shown streaming and then syntax-highlighted. A harness (`codegen/Harness.java`) compiles it, TornadoVM JIT-compiles it to CUDA (the first lines are shown, from `--printKernel`) and runs it on 4096 × 3072 pixels. The *same* method then runs as plain Java on one CPU thread, and the fractal is drawn in the terminal: 3.1 ms vs ~1,180 ms, 99.79% of pixels identical (the rest is float rounding at the set's edge: the GPU fuses multiply-adds). 3. **Bench:** three spinners, then prefill and decode bars with each side's ± | tokens generated (twice); the kernel compiles, runs and matches the CPU on ≥ 99% of pixels; all four bench numbers measured |
 
 The numbers are this run's, not constants: the scoreboard shows what was measured. Two of them vary between runs,
 and the fancy output shows that honestly.
 * **Tile ladder:** the hinted tile kernel and the hand-tuned KernelContext are within 1–3% in wall clock. At 10
   executions their order flipped between runs, so `fancyTile.sh` uses 30 per rung, and the line says *beats* or
   *trails*.
+* **The generated kernel** comes from greedy decoding (temperature 0), so the same prompt and model give the same
+  kernel; rehearsal shows what the stage will show. If the live kernel ever fails to compile, the act shows the
+  compiler error, then runs `codegen/mandelbrot.reference.java` (the kernel the same model wrote for the same prompt
+  in rehearsal), labelled as such. Smaller models do worse: Llama-3.2-3B's kernel did not compile, and whole programs
+  (not just the kernel) failed with both models. That is why the model writes only the kernel and the harness does
+  the rest. `MODEL_CODE=<gguf>` picks another model.
 * **jitLLM vs llama.cpp prefill:** within llama.cpp's own ±9k run-to-run spread (0.99–1.02×). Decode is about 0.78×
   (400 vs 516 t/s).
 
