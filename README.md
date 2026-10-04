@@ -21,6 +21,7 @@ scoreboard with PASSED/FAILED checks, all rendered from the demos' real output b
 bash fancyHybrid.sh      # Java -> cuBLAS -> Java pipeline, kernel time per task; CUDA graph 8-9x as bars              (~10 s)
 bash fancyTile.sh        # threads + tiles + cuBLAS inside one CUDA graph; the FP16 GEMM ladder as a bar chart      (~20 s)
 bash fancyJitllm.sh      # chat · the LLM writes a GPU kernel, TornadoVM runs it, a fractal · vs llama.cpp  [chat|code|bench] (~35 s)
+bash fancyJitllmLive.sh  # full-screen live dashboard: the Java LLM writes a kernel, it runs on the SAME GPU, every part lit  (~30 s)
 ```
 
 ## The demos
@@ -35,6 +36,39 @@ Other models: `bash models.sh` lists every GGUF on the machine, about 30, among 
 (`~/jcon/models/Qwen3-1.7B-f16.gguf`, the slide's second prefill model), Qwen3-4B/8B F16, Llama-3.2-1B/3B,
 Llama-3-8B, gemma-4-E2B, Phi-3, Mistral-7B, DeepSeek-R1-Distill-Qwen-1.5B/7B and Qwen3.8-27B Q4_0. Use one with
 `MODEL_CHAT=<path> bash demoJitllm.sh chat` or `MODEL_BENCH=<path> bash demoJitllm.sh bench`.
+
+### The live dashboard: `fancyJitllmLive.sh`
+
+The point it makes visible: **one GPU, two Java workloads**. A Java LLM engine runs on the GPU and writes Java,
+and that Java then runs on the same GPU. Full screen (at least 120 × 40), redrawn ten times a second, about 30 s.
+
+![dashboard at the end of a run](live/screenshot-final.png)
+
+* **The pipeline row** has five components, each lit (heavy border, spinner, elapsed time) while it works and ticked
+  with its time when done. The arrows light up as work flows.
+  1. the jitLLM engine running Qwen3-4B;
+  2. the generated Java;
+  3. javac;
+  4. TornadoVM's JIT to CUDA;
+  5. the kernel running.
+* **The GPU panel** polls `nvidia-smi`. It shows utilization, memory, and **which process holds the GPU**, labelled
+  and colored by the component that started it (matched through `/proc` parent PIDs). The utilization timeline
+  covers the whole run, each sample in the color of the active component. A finished run shows the magenta LLM
+  burst, then the cyan kernel load, on one device. "Seen on this GPU during the run" lists both processes: jitLLM
+  about 8.4 GB, the kernel about 0.5 GB.
+* **The content panel** follows the work:
+  * the code streaming from the model;
+  * the CUDA TornadoVM generated from it;
+  * the kernel's output: a zoom into Seahorse Valley, 100 frames at 7680 × 4320, one kernel execution per frame
+    (~17 ms each), paced at ~12 frames/s so the load shows on `nvidia-smi`. It is drawn with half-blocks, two
+    pixels per cell, with histogram colors.
+* **The footer and the check:** jitLLM's metrics, the GPU-vs-CPU check of the same method (99.87% of pixels), the
+  frame times, and `PASSED`.
+
+Everything comes from the processes it starts and from `nvidia-smi`; nothing is replayed. The model's prompt is
+`live/prompt.txt`. Because of temperature 0 the kernel is the same every run. If it ever fails to compile, the
+dashboard marks javac red and runs `live/reference.kernel` (the model's rehearsal output), labelled. Logs land in
+a temp directory printed at the end. `[enter]` leaves the dashboard; `NO_PAUSE=1` exits straight away.
 
 ### What the fancy versions show (and check)
 
