@@ -5,7 +5,7 @@ Every demo of the talk that runs on this machine, one command each. (Apache Flin
 ```bash
 ssh <this machine>
 cd demoDevoxx
-bash check.sh            # before the talk: runs everything once, prints OK/FAIL per demo (~40 s)
+bash check.sh            # before the talk: runs everything once, prints OK/FAIL per demo (~1 min)
 
 bash demoHybrid.sh       # slides 14-16  Java kernel -> cuBLAS -> Java kernel in one task graph; CUDA graph replay   (~3 s)
 bash demoTile.sh         # slides 17-19  threads + CUDA Tile + cuBLAS in one CUDA graph; the tile GEMM ladder      (~6 s)

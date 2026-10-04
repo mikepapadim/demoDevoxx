@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-talk check: GPU, every demo once in its fastest form, pass/fail per demo. About 40 seconds.
+# Pre-talk check: GPU, every demo once in its fastest form, pass/fail per demo. About a minute.
 set -uo pipefail
 cd "$(dirname "$0")"
 export NO_PAUSE=1
