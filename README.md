@@ -19,6 +19,7 @@ scoreboard with PASSED/FAILED checks, all rendered from the demos' real output b
 
 ```bash
 bash fancyHybrid.sh      # Java -> cuBLAS -> Java pipeline, kernel time per task; CUDA graph 8-9x as bars              (~10 s)
+bash fancyTileNsys.sh    # fancyTile + NVIDIA Nsight Systems: the GEMM ladder profiled by nsys, kernel times, TFLOP/s, GPU timeline (~30 s)
 bash fancyTile.sh        # threads + tiles + cuBLAS inside one CUDA graph; the FP16 GEMM ladder as a bar chart      (~20 s)
 bash fancyJitllm.sh      # chat · the LLM writes a GPU kernel, TornadoVM runs it, a fractal · vs llama.cpp  [chat|code|bench] (~35 s)
 bash fancyHybridLive.sh  # full-screen live Hybrid API: cuFFT library tasks + Java kernels in one TaskGraph, a live filter sweep  (~20 s)
@@ -85,6 +86,27 @@ Other models: `bash models.sh` lists every GGUF on the machine, about 30, among 
 (`~/jcon/models/Qwen3-1.7B-f16.gguf`, the slide's second prefill model), Qwen3-4B/8B F16, Llama-3.2-1B/3B,
 Llama-3-8B, gemma-4-E2B, Phi-3, Mistral-7B, DeepSeek-R1-Distill-Qwen-1.5B/7B and Qwen3.8-27B Q4_0. Use one with
 `MODEL_CHAT=<path> bash demoJitllm.sh chat` or `MODEL_BENCH=<path> bash demoJitllm.sh bench`.
+
+### CUDA Tile measured by nsys: `fancyTileNsys.sh`
+
+`fancyTile.sh`, with act 2 run under **NVIDIA Nsight Systems** (`nsys profile --trace=cuda`) and drawn from nsys's
+own reports. This is the honest view of the ladder: kernel time, the measurement the slides' TFLOP/s come from.
+On screen:
+* **nsys's kernel-summary table, verbatim** (`nsys stats --report cuda_gpu_kern_sum`): every rung's kernel by name
+  (`kcSimple` … `tile128x128x64Hinted`, cuBLAS's `ampere_s1688gemm_…`), 10 launches each.
+* **Per rung:** kernel time (the median launch) and TFLOP/s from nsys, the ratio to cuBLAS, and the program's own
+  wall clock beside it. The grey part of each bar is the rest of the wall clock: at n = 2048 every call also copies
+  the 16 MB result back, which flattens the wall-clock ladder. In a recorded run, the hinted tile kernel took
+  138.5 µs against 143.4 µs for the hand-tuned KernelContext, and cuBLAS 116.9 µs (147 TFLOP/s).
+* **The GPU timeline, from nsys's per-launch trace** (`cuda_gpu_trace`): one lane per rung plus the memory copies,
+  over the whole run. It is a staircase of the eight rungs, with the copies in between. The GEMM kernels are about
+  7% of the span; the rest is copy-back, the CPU-side checks and the JIT compilation of each next rung.
+* **The checks:** a kernel for every rung (80 launches traced) and every rung's result correct.
+
+The `.nsys-rep` file stays in the log directory, so it can be opened in the Nsight Systems GUI afterwards. nsys
+must be on the `PATH`; here it comes from CUDA 12.6.
+
+![act 2, from nsys](tile/screenshot-nsys.png)
 
 ### The live Hybrid API dashboard: `fancyHybridLive.sh`
 

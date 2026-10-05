@@ -14,6 +14,9 @@ real output of each demo (the logs the scripts capture). Standard library only. 
     fancy.py code FILE                 a Java source with line numbers and syntax colors
     fancy.py cuda LOG [LINES]          the start of the CUDA kernel TornadoVM generated (from --printKernel)
     fancy.py fractal LOG               the generated kernel's result: the image, GPU vs CPU time, match check
+    fancy.py nsys-raw TXT              nsys's own kernel-summary table, verbatim (trimmed to the screen)
+    fancy.py nsys-ladder KERN TRACE LOG N   demo 25 under nsys: kernel time and TFLOP/s per rung vs wall clock,
+                                       and a GPU timeline drawn from nsys's per-launch trace
     fancy.py scoreboard TITLE          every row the renders above recorded (in $FANCY_STATE), with checks
 
 Each render appends its headline row and its check to $FANCY_STATE, so the script can end with a scoreboard.
@@ -30,6 +33,7 @@ WIDTH = 46
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
 GREEN, YELLOW, CYAN, MAGENTA, BLUE, RED, WHITE = (
     "\033[1;32m", "\033[1;33m", "\033[1;36m", "\033[1;35m", "\033[1;34m", "\033[1;31m", "\033[1;37m")
+GREY = "\033[38;5;240m"
 
 
 def paint(color, s):
@@ -362,6 +366,111 @@ def fractal(log):
            f"kernel: compiles, runs on the GPU, {100 * same / total:.2f}% of pixels match the CPU (>= 99%)")
 
 
+LADDER = [  # demo 25's rungs: (nsys kernel name, label, kind)
+    ("kcSimple", "1. KernelContext, simple", "kc"), ("kcOptimised", "2. KernelContext, optimised", "kc"),
+    ("tile32x32x32", "3. TileContext 32x32x32", "tile"), ("tile64x64x64", "4. TileContext 64x64x64", "tile"),
+    ("tile128x128x32", "5. TileContext 128x128x32", "tile"), ("tile128x128x64", "6. TileContext 128x128x64", "tile"),
+    ("tile128x128x64Hinted", "7. TileContext 128x128x64 +hint", "tile"), ("cublas", "8. cuBLAS GemmEx FP16->FP32", "cublas"),
+]
+KIND_COLOR = {"kc": BLUE, "tile": MAGENTA, "cublas": GREEN}
+
+
+def nsys_raw(path):
+    lines = [l.rstrip() for l in open(path, errors="replace") if l.strip() and not l.startswith(("WARNING", "         ", "Generating", "Processing"))]
+    print("    " + paint(BOLD, "nsys says") + paint(DIM, "   nsys stats --report cuda_gpu_kern_sum   (verbatim; GPU time per kernel)"))
+    lines = [l.replace(" ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):", "").rstrip() for l in lines if l.strip()]
+    width = min(150, max(len(l) for l in lines[:12]) + 2)
+    print("    " + paint(DIM, "┌" + "─" * width))
+    for line in lines[:12]:
+        print("    " + paint(DIM, "│ ") + paint("\033[0;38;5;151m", line[:width - 2]))
+    print("    " + paint(DIM, "└" + "─" * width))
+    print()
+
+
+def csv_rows(path):
+    import csv
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def nsys_ladder(kern_csv, trace_csv, program_log, n):
+    n = int(n)
+    flops = 2.0 * n ** 3
+    kern = {}
+    for r in csv_rows(kern_csv):
+        name = r["Name"]
+        key = name if name in dict((k, 1) for k, _, _ in LADDER) else ("cublas" if "gemm" in name.lower() else None)
+        if key:
+            kern[key] = (float(r["Med (ns)"]) / 1000, int(r["Instances"]), name)
+    wall = {}
+    for m in re.finditer(r"^(\d)\. .+?\s{2,}\S+\s+(\d+)\s+\d+\s*$", read(program_log), re.M):
+        wall[LADDER[int(m.group(1)) - 1][0]] = float(m.group(2))
+    if len(kern) < len(LADDER):
+        print(paint(RED, f"    nsys found {len(kern)} of {len(LADDER)} rung kernels"))
+        record("nsys kernel times", "missing", False, "nsys: a kernel per rung")
+        return
+    cublas = kern["cublas"][0]
+    top = max(max(w for w in wall.values()) if wall else 0, max(k[0] for k in kern.values()))
+    print("    " + paint(BOLD, f"FP16 GEMM {n}³: GPU kernel time from nsys") + paint(DIM, "  (median of each kernel's launches)  vs the program's wall clock per call"))
+    print("    " + paint(BLUE, "■ ") + paint(DIM, "KernelContext  ") + paint(MAGENTA, "■ ") + paint(DIM, "TileContext  ")
+          + paint(GREEN, "■ ") + paint(DIM, "cuBLAS     ") + paint(GREY, "░ ") + paint(DIM, "rest of the wall clock: copy-back + dispatch"))
+    print()
+    print(f"    {'':34} {'kernel':>9} {'TFLOP/s':>8} {'vs cuBLAS':>9}   {'wall':>7}")
+    best_java = min(kern[k][0] for k, _, kind in LADDER if kind != "cublas")
+    for key, label, kind in LADDER:
+        us, count, name = kern[key]
+        w = wall.get(key, us)
+        kn = max(1, round(us / top * 40))
+        wn = max(kn, round(w / top * 40))
+        bars = paint(KIND_COLOR[kind], "█" * kn) + paint(GREY, "░" * (wn - kn)) + " " * (40 - wn)
+        star = paint(GREEN, " ★") if us == best_java else ""
+        print(f"    {pad(label, 34)} {us:7.1f}µs {flops / (us * 1e-6) / 1e12:8.1f} {us / cublas:8.2f}x   {w:6.0f}µs  {bars}{star}")
+    print()
+    tile_hint, kc_opt = kern["tile128x128x64Hinted"][0], kern["kcOptimised"][0]
+    print(f"    {paint(BOLD, 'kernel time is what compares code:')} the hinted tile kernel runs {paint(BOLD, f'{tile_hint:.1f} µs')}"
+          f" vs {kc_opt:.1f} µs for the hand-tuned KernelContext ({kc_opt / tile_hint:.2f}x),"
+          f" {tile_hint / cublas:.2f}x cuBLAS")
+    if wall:
+        print(paint(DIM, f"    on wall clock both read ~{wall.get('tile128x128x64Hinted', 0):,.0f} vs {wall.get('kcOptimised', 0):,.0f} µs:"
+                         f" every call also copies the {n * n * 4 / 2**20:.0f} MB result back, which flattens the ladder"))
+    print()
+    # the timeline: every launch nsys recorded, one lane per rung, plus the copies
+    trace = csv_rows(trace_csv)
+    names = {k: k for k, _, _ in LADDER}
+    events = []
+    for r in trace:
+        name, start, dur = r["Name"], int(r["Start (ns)"]), int(r["Duration (ns)"])
+        lane = names.get(name) or ("cublas" if "gemm" in name.lower() else ("copy" if "memcpy" in name else None))
+        if lane:
+            events.append((lane, start, dur))
+    kernels = [e for e in events if e[0] != "copy"]
+    t0 = min(e[1] for e in kernels)
+    t1 = max(e[1] + e[2] for e in kernels)
+    cols = 100
+    span = t1 - t0
+    lanes = [(k, label, KIND_COLOR[kind]) for k, label, kind in LADDER] + [("copy", "CUDA memcpy (H2D + D2H)", YELLOW)]
+    print("    " + paint(BOLD, "the GPU timeline, from nsys's per-launch trace") + paint(DIM, f"  ({span / 1e6:.1f} ms from the first GEMM to the last; each column {span / cols / 1e3:.0f} µs)"))
+    busy = sum(e[2] for e in kernels)
+    for lane, label, color in lanes:
+        cells = [0.0] * cols
+        for l, start, dur in events:
+            if l != lane or start + dur < t0 or start > t1:
+                continue
+            a = (start - t0) / span * cols
+            b = (start + dur - t0) / span * cols
+            for c in range(int(a), min(cols, int(b) + 1)):
+                cells[c] += max(0.0, min(b, c + 1) - max(a, c))
+        row = "".join(paint(color, "█") if v >= 0.5 else paint(color, "▌") if v >= 0.15 else paint(color, "▏") if v > 0 else paint(GREY, "·") for v in cells)
+        total = sum(d for l, _, d in events if l == lane) / 1e3
+        print(f"    {pad(paint(DIM, label[:27]), 28)}{row} {paint(DIM, f'{total:8.0f} µs')}")
+    print(paint(DIM, f"    the GEMM kernels are {100 * busy / span:.0f}% of that span; the rest is the result copy-back, the CPU-side"
+                     f" check of every result, and TornadoVM JIT-compiling each next rung"))
+    print()
+    record("Tile GEMM, nsys kernel time", f"tile {tile_hint:.1f} µs vs hand-tuned {kc_opt:.1f}", True)
+    record("cuBLAS, nsys kernel time", f"{cublas:.1f} µs ({flops / (cublas * 1e-6) / 1e12:.0f} TFLOP/s)", all(k[1] > 0 for k in kern.values()),
+           f"nsys: a kernel for every rung ({sum(k[1] for k in kern.values())} launches traced)")
+
+
 def scoreboard(title):
     rows = []
     if STATE and os.path.exists(STATE):
@@ -385,7 +494,7 @@ def main(argv):
     handlers = {"banner": banner, "act": act, "hybrid-tasks": hybrid_tasks, "hybrid-graph": hybrid_graph,
                 "tile-pipeline": tile_pipeline, "tile-ladder": tile_ladder, "llm-chat": llm_chat,
                 "llm-bench": llm_bench, "scoreboard": scoreboard, "stream": stream, "code": code,
-                "cuda": cuda, "fractal": fractal}
+                "cuda": cuda, "fractal": fractal, "nsys-raw": nsys_raw, "nsys-ladder": nsys_ladder}
     handlers[command](*args)
     return 0
 
