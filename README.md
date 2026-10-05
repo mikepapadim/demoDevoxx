@@ -21,6 +21,7 @@ scoreboard with PASSED/FAILED checks, all rendered from the demos' real output b
 bash fancyHybrid.sh      # Java -> cuBLAS -> Java pipeline, kernel time per task; CUDA graph 8-9x as bars              (~10 s)
 bash fancyTile.sh        # threads + tiles + cuBLAS inside one CUDA graph; the FP16 GEMM ladder as a bar chart      (~20 s)
 bash fancyJitllm.sh      # chat · the LLM writes a GPU kernel, TornadoVM runs it, a fractal · vs llama.cpp  [chat|code|bench] (~35 s)
+bash fancyHybridLive.sh  # full-screen live Hybrid API: cuFFT library tasks + Java kernels in one TaskGraph, a live filter sweep  (~20 s)
 bash fancyJitllmLive.sh  # full-screen live dashboard: the Java LLM writes a kernel, it runs on the SAME GPU, every part lit  (~30 s)
 ```
 
@@ -84,6 +85,38 @@ Other models: `bash models.sh` lists every GGUF on the machine, about 30, among 
 (`~/jcon/models/Qwen3-1.7B-f16.gguf`, the slide's second prefill model), Qwen3-4B/8B F16, Llama-3.2-1B/3B,
 Llama-3-8B, gemma-4-E2B, Phi-3, Mistral-7B, DeepSeek-R1-Distill-Qwen-1.5B/7B and Qwen3.8-27B Q4_0. Use one with
 `MODEL_CHAT=<path> bash demoJitllm.sh chat` or `MODEL_BENCH=<path> bash demoJitllm.sh bench`.
+
+### The live Hybrid API dashboard: `fancyHybridLive.sh`
+
+The Hybrid API in one screen: **NVIDIA library tasks and Java kernels in one TaskGraph**, sharing device buffers on
+one GPU. It runs `hybrid/HybridLive.java` on TornadoVM 7.0.0, about 20 s, in a terminal of at least 124 × 40.
+
+```
+signal -> 1 cuFFT forward (NVIDIA) -> 2 lowPass (Java @Parallel, JIT) -> 3 cuFFT inverse (NVIDIA) -> 4 normalize (Java, JIT) -> output
+```
+
+![the sweep](hybrid/screenshot-sweep.png)
+
+* **The pipeline:** library tasks in green, Java kernels in blue, all inside a "one TaskGraph on the GPU" frame,
+  each box with its GPU time from **TornadoVM's own profiler** (`withProfiler(SILENT)`, `getProfileLog()`). The
+  flow animation lights the boxes in execution order. The line under the frame shows what actually crosses PCIe
+  per execution, from the profiler: 32 KB in (signal, cutoff) and 64 KB out (output, plus the spectrum for this
+  display).
+* **The signal:** two "voice" tones plus eight "noise" tones. The low-pass cutoff sweeps from bin 1200 down to 5,
+  one execution of the whole graph per frame (~10 frames/s). On screen:
+  * the noisy input;
+  * the spectrum from cuFFT, with what the Java filter kept in green, what it removed as grey ghosts, and the
+    cutoff marker;
+  * the output, which turns into a clean tone.
+* **Checked every frame:** the input is a sum of tones, so a low-pass keeps exactly the tones below the cutoff.
+  Every frame is compared with that exact answer: 110/110 correct, max error 1.2e-6.
+* **The task bars** show a rolling median of the last 15 executions; the GPU clocks down between paced frames,
+  so single executions vary.
+* **The CUDA graph:** the same graph run 300 times plainly and with `withCUDAGraph()`, 58–61 µs vs 39 µs per
+  execution (1.5–1.6×), still correct.
+* **The end:** `PASSED` if every frame and the graph run were correct.
+
+![the end: a clean tone, and the CUDA graph](hybrid/screenshot-final.png)
 
 ### The live dashboard: `fancyJitllmLive.sh`
 

@@ -13,4 +13,5 @@ check demoTile    "bash demoTile.sh"          "All rungs produced the same, corr
 check demoJitllm  "bash demoJitllm.sh"        "pp512"
 check fancyJitllmCode "bash fancyJitllm.sh code" "PASSED"
 check fancyJitllmLive "bash fancyJitllmLive.sh" "LiveDashboard: PASSED"
+check fancyHybridLive "bash fancyHybridLive.sh" "HybridDashboard: PASSED"
 echo "logs: $log"
