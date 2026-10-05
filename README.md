@@ -24,6 +24,54 @@ bash fancyJitllm.sh      # chat · the LLM writes a GPU kernel, TornadoVM runs i
 bash fancyJitllmLive.sh  # full-screen live dashboard: the Java LLM writes a kernel, it runs on the SAME GPU, every part lit  (~30 s)
 ```
 
+## How to run the fancy demos
+
+**1. Once per machine** (needs the network; clones and builds jitLLM):
+
+```bash
+cd demoDevoxx
+bash setup.sh            # re-run any time to update jitLLM to the latest main
+```
+
+Paths to the TornadoVM SDKs, the demos repo, llama.cpp and the models are all in `env.sh`; each one
+can be overridden with an environment variable of the same name (e.g. `DEMOS_REPO=... bash fancyHybrid.sh`).
+
+**2. Before the talk:**
+
+```bash
+bash check.sh            # every demo once, OK/FAIL per demo (~1 min)
+bash demoJitllm.sh chat  # warms jitLLM's kernel JIT so the first fancy run is not slow
+nvidia-smi               # the GPU should be idle: no stray java processes
+```
+
+**3. Terminal:** a dark background, a font with Unicode block and braille characters, 256 colours, and a window of at
+least **120 × 40** (required by `fancyJitllmLive.sh`; the others are fine at 100 columns). Python 3 (standard library
+only) renders everything.
+
+**4. Run** (from the repo root; each script runs from anywhere):
+
+| command | what you see | time |
+|---|---|---|
+| `bash fancyHybrid.sh` | Java → cuBLAS → Java pipeline, per-task kernel time; CUDA graph speed-up as bars | ~10 s |
+| `bash fancyTile.sh` | threads + tiles + cuBLAS in one CUDA graph; FP16 GEMM ladder | ~20 s |
+| `bash fancyJitllm.sh` | all three acts: `chat`, `code` (the LLM writes a GPU kernel), `bench` (vs llama.cpp) | ~35 s–1.5 min |
+| `bash fancyJitllm.sh chat` / `code` / `bench` | one act only | |
+| `bash fancyJitllmLive.sh` | full-screen live dashboard (see below); `[enter]` leaves it | ~30 s |
+
+Each ends with a scoreboard that says `PASSED` only if every check behind it held (see the table further down).
+
+**Knobs** (environment variables):
+
+| variable | effect |
+|---|---|
+| `NO_PAUSE=1` | no `[enter]` between acts (and the live dashboard exits at the end) |
+| `NO_COLOR=1` | plain output from the `fancy*.sh` renderer (not the live dashboard) |
+| `FANCY_LOGS=<dir>` | keep the raw logs of each step there (default: a fresh temp dir, printed on failure) |
+| `MODEL_CHAT`, `MODEL_CODE`, `MODEL_BENCH` | another GGUF for chat / kernel writing / the benchmark (`bash models.sh` lists them) |
+| `ASSEMBLE_SECONDS=<s>` | how long the live dashboard holds the javac step (default 4) |
+
+If a step fails, its spinner turns into a red `✘` with the path of its log.
+
 ## The demos
 
 | script | variants | what to point at |
@@ -61,7 +109,7 @@ and that Java then runs on the same GPU. Full screen (at least 120 × 40), redra
     on the GPU", with a note on what the system prompt contains. It stays above the code as the code streams in,
     and as a one-line `❯ prompt:` header in every later view;
   * the code streaming from the model;
-  * **how the answer becomes a program** (the javac step, held ~6 s so it can be read; `ASSEMBLE_SECONDS`):
+  * **how the answer becomes a program** (the javac step, held 4 s after javac so it can be read; `ASSEMBLE_SECONDS`):
     1. extract the ```` ```java ```` block from the model's raw output;
     2. insert it at the `/*KERNEL*/` marker of `live/Harness.template`, giving `Harness.java`. The view shows that
        file with the model's lines marked by a yellow bar and the fixed harness in grey. Arrows point at
